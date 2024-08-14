@@ -1,0 +1,26 @@
+[package]
+name = "gpx-separator"
+version = "0.0.2"
+description = "Separate GPX files by waypoints, routes and tracks"
+authors = ["Miitto"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[build-dependencies]
+tauri-build = { version = "1", features = [] }
+
+[dependencies]
+tauri = { version = "1", features = [
+    "dialog-message",
+    "dialog-open",
+    "dialog-confirm",
+    "shell-open",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = "1.38.0"
+
+[features]
+# This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]
