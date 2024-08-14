@@ -9,7 +9,7 @@ use std::{
 
 use tauri::{api::dialog::blocking::FileDialogBuilder, AppHandle, Manager};
 
-// Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
+/// Command to start the conversion process
 #[tauri::command]
 async fn convert(path: PathBuf, app: AppHandle) -> bool {
     println!("Path: {}", path.to_string_lossy());
@@ -20,6 +20,7 @@ async fn convert(path: PathBuf, app: AppHandle) -> bool {
     true
 }
 
+/// Command to open a converted file in the file explorer
 #[tauri::command]
 fn open_file(path: PathBuf) -> Result<(), String> {
     let res = std::process::Command::new("explorer")
@@ -46,6 +47,7 @@ struct Payload {
     path: String,
 }
 
+/// Start of the save process: tokenize, ask for save location then write files
 async fn parse_file(path: PathBuf, app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let parts = tokenize_file(path.clone()).await?;
     tokio::spawn(async move {
@@ -88,6 +90,15 @@ async fn parse_file(path: PathBuf, app: AppHandle) -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+/// Get the indent level change for the part
+///
+/// # Arguments
+///
+/// * `part` - The part to check
+///
+/// # Returns
+///
+/// The indent level change
 fn parse_indent_level(part: &str) -> i64 {
     let part = part.trim();
     if is_opening_tag(part) {
@@ -123,6 +134,19 @@ fn is_self_closing_tag(part: &str) -> bool {
         || (part.starts_with("<?") && part.ends_with("?>"))
 }
 
+/// Tokenize the file
+///
+/// # Arguments
+///
+/// * `path` - The path to the file
+///
+/// # Returns
+///
+/// A vector of strings containing the parts of the file
+///
+/// # Errors
+///
+/// Returns an error if the file could not be read
 async fn tokenize_file(path: PathBuf) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     println!("Tokenizing File: {}", path.display());
     let source = std::fs::File::open(path)?;
@@ -147,6 +171,21 @@ async fn tokenize_file(path: PathBuf) -> Result<Vec<String>, Box<dyn std::error:
     Ok(parts[1..].to_vec())
 }
 
+/// Writes the parts to separate files
+///
+/// # Arguments
+///
+/// * `parts` - The parts of the file
+/// * `base_name` - The base name of the file
+/// * `path` - The path to save the files
+///
+/// # Returns
+///
+/// A boolean indicating if the files were written successfully
+///
+/// # Errors
+///
+/// Returns an error if the files could not be written
 async fn write_files(
     parts: Vec<String>,
     base_name: &str,
@@ -186,8 +225,8 @@ async fn write_files(
     let mut wpt_writer = std::io::BufWriter::new(wpt_file);
     let mut rte_writer = std::io::BufWriter::new(rte_file);
     let mut trk_writer = std::io::BufWriter::new(trk_file);
-    // Read source file
 
+    // If the last tag was a value (or a tag)
     let mut last_was_val = true;
     let mut indent_level = 0;
     let mut last_indent_level = 0;
@@ -256,16 +295,19 @@ async fn handle_tag(
     let mut part = part.to_string();
     if part.trim().starts_with(format!("<{}", tag_name).as_str()) {
         loop {
+            // Handle self closing tags severalty, as they close in the same part
             if is_self_closing_tag(part.as_str()) {
                 writer.write_all(b"\n")?;
                 for _ in 0..*indent_level {
                     writer.write_all(b"  ")?;
                 }
                 writer.write_all(part.as_bytes())?;
+                // need to check that the tag that is closing is the correct one, or a self closing trkseg can close an open trk as they start the same
                 if part.starts_with(format!("<{}", tag_name).as_str())
                     && part.ends_with("/>")
                     && !part
                         .chars()
+                        // check that there is a none alphabetic character character to differentiate between tags like trkseg and trk
                         .nth(tag_name.len() + 1)
                         .unwrap_or(' ')
                         .is_alphabetic()
@@ -294,6 +336,8 @@ async fn handle_tag(
             }
 
             writer.write_all(part.as_bytes())?;
+
+            // Break out of this loop when we close our original tag
             if part.starts_with(format!("</{}>", tag_name).as_str()) {
                 println!("Found closing tag: {}", part);
                 break;
@@ -317,6 +361,7 @@ async fn write_other_tags(
     last_indent_level: &mut i64,
     last_was_val: &mut bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // closing tag indent needs to be processed before writing the indent
     if is_closing_tag(part.trim()) {
         println!("Found closing tag: {}", part);
         *last_indent_level = *indent_level;
@@ -324,6 +369,7 @@ async fn write_other_tags(
     }
 
     for writer in writers.iter_mut() {
+        // write newline and indent if indent level changed and last was not a value (plain text). keeps plain values inline with their tags
         if !(*last_was_val
             || !is_tag(part)
             || indent_level == last_indent_level && *indent_level != 0)
@@ -334,12 +380,16 @@ async fn write_other_tags(
             }
         }
 
+        // Multiline tags need to be processed line by line for indent level
         if part.contains('\n') {
             let lines = part.split('\n');
 
             for line in lines {
+                // for the last line, we need to split off the close bracket
                 if line.ends_with('>') {
                     let self_closing = line.ends_with("/>");
+
+                    // need to put the close to this tag on the next line
                     writer.write_all(
                         line[..line.len() - if self_closing { 2 } else { 1 }].as_bytes(),
                     )?;
@@ -348,6 +398,7 @@ async fn write_other_tags(
                     for _ in 0..*indent_level {
                         writer.write_all(b"  ")?;
                     }
+
                     if self_closing {
                         writer.write_all(b"/>")?;
                     } else {
@@ -366,6 +417,8 @@ async fn write_other_tags(
         }
     }
     *last_was_val = !is_tag(part);
+
+    // opening tag indent needs to be processed after writing the indent
     if is_opening_tag(part.trim()) {
         *last_indent_level = *indent_level;
         *indent_level += parse_indent_level(part);
