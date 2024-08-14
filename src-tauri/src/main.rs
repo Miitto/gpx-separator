@@ -188,7 +188,7 @@ async fn write_files(
     let mut trk_writer = std::io::BufWriter::new(trk_file);
     // Read source file
 
-    let mut last_was_val = false;
+    let mut last_was_val = true;
     let mut indent_level = 0;
     let mut last_indent_level = 0;
 
@@ -230,28 +230,17 @@ async fn write_files(
             .await
             .unwrap_or(false)
         {
-            if is_closing_tag(part.trim()) {
-                last_indent_level = indent_level;
-                indent_level += parse_indent_level(&part);
-            }
-            for writer in [&mut wpt_writer, &mut rte_writer, &mut trk_writer].iter_mut() {
-                if indent_level != last_indent_level && is_tag(&part) && !last_was_val {
-                    writer.write_all(b"\n")?;
-                    for _ in 0..indent_level {
-                        writer.write_all(b"  ")?;
-                    }
-                }
-
-                writer.write_all(part.as_bytes())?;
-            }
-            last_was_val = !is_tag(&part);
-            if is_opening_tag(part.trim()) {
-                last_indent_level = indent_level;
-                indent_level += parse_indent_level(&part);
-            }
+            write_other_tags(
+                &mut [&mut wpt_writer, &mut rte_writer, &mut trk_writer],
+                &part,
+                &mut indent_level,
+                &mut last_indent_level,
+                &mut last_was_val,
+            )
+            .await?;
         }
+        println!("Files written successfully");
     }
-    println!("Files written successfully");
     Ok(true)
 }
 
@@ -319,4 +308,67 @@ async fn handle_tag(
         return Ok(true);
     }
     Ok(false)
+}
+
+async fn write_other_tags(
+    writers: &mut [&mut std::io::BufWriter<std::fs::File>],
+    part: &str,
+    indent_level: &mut i64,
+    last_indent_level: &mut i64,
+    last_was_val: &mut bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if is_closing_tag(part.trim()) {
+        println!("Found closing tag: {}", part);
+        *last_indent_level = *indent_level;
+        *indent_level += parse_indent_level(part);
+    }
+
+    for writer in writers.iter_mut() {
+        if !(*last_was_val
+            || !is_tag(part)
+            || indent_level == last_indent_level && *indent_level != 0)
+        {
+            writer.write_all(b"\n")?;
+            for _ in 0..*indent_level {
+                writer.write_all(b"  ")?;
+            }
+        }
+
+        if part.contains('\n') {
+            let lines = part.split('\n');
+
+            for line in lines {
+                if line.ends_with('>') {
+                    let self_closing = line.ends_with("/>");
+                    writer.write_all(
+                        line[..line.len() - if self_closing { 2 } else { 1 }].as_bytes(),
+                    )?;
+
+                    writer.write_all(b"\n")?;
+                    for _ in 0..*indent_level {
+                        writer.write_all(b"  ")?;
+                    }
+                    if self_closing {
+                        writer.write_all(b"/>")?;
+                    } else {
+                        writer.write_all(b">")?;
+                    }
+                } else {
+                    writer.write_all(line.as_bytes())?;
+                    writer.write_all(b"\n")?;
+                    for _ in 0..*indent_level + 1 {
+                        writer.write_all(b"  ")?;
+                    }
+                }
+            }
+        } else {
+            writer.write_all(part.as_bytes())?;
+        }
+    }
+    *last_was_val = !is_tag(part);
+    if is_opening_tag(part.trim()) {
+        *last_indent_level = *indent_level;
+        *indent_level += parse_indent_level(part);
+    }
+    Ok(())
 }
